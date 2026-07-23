@@ -492,16 +492,18 @@ func (group resolvedIssueTableGroup) predicate(w http.ResponseWriter, key string
 				writeError(w, http.StatusBadRequest, "invalid group_key")
 				return "", false
 			}
-			// A legacy token key must keep working AFTER the catalog is seeded:
-			// resolve it to the built-in that owns the token, and still accept the
-			// unseeded form. Group keys are refetched per request, but an in-flight
-			// client should not silently get an empty column.
-			tokenArg := addArg(raw)
-			return fmt.Sprintf(
-				"%[1]s IN (COALESCE((SELECT ist.id::text FROM issue_status ist "+
-					"WHERE ist.workspace_id = i.workspace_id AND ist.system_key = %[2]s), ''), "+
-					"'%[3]s' || %[2]s)",
-				effectiveIssueStatusIDExpr, tokenArg, legacyStatusGroupPrefix), true
+			// A legacy token key is the COMPAT LANE: every issue whose legacy status
+			// token is this token, which by the double-write projection includes the
+			// custom statuses of that Category (they store their Category in
+			// `status`). This is the pre-catalog meaning of the key, and it is what
+			// the List / status-grouped Board still render lanes by.
+			//
+			// Matching the built-in's catalog id instead would make the lane exclude
+			// custom statuses, so "custom status selected" (status_ids = that custom
+			// id) AND "Category lane" intersect to nothing and the surface goes empty
+			// (MUL-4809). in_review / blocked keep their own token, so they stay in
+			// their own lanes rather than folding into in_progress.
+			return fmt.Sprintf("i.status = %s::text", addArg(raw)), true
 		}
 		return fmt.Sprintf("%s = %s::text", effectiveIssueStatusIDExpr, addArg(raw)), true
 	case "assignee":

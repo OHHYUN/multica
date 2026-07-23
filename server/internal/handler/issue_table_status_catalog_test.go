@@ -235,3 +235,95 @@ func statusIDForSystemKey(t *testing.T, systemKey string) string {
 	}
 	return id
 }
+
+// TestCategoryLaneReturnsRowsForCustomStatusSelection is the cross-layer
+// counterexample for the empty-list P0 (MUL-4809 review).
+//
+// The List projects a selected CUSTOM status onto its Category lane, so it asks
+// for `group_key=status:in_progress` while narrowing with
+// `filters.status_ids=[<custom id>]`. The lane predicate used to resolve the
+// token to the BUILT-IN In Progress catalog id; a custom status's effective
+// group value is its OWN id, so the two conditions AND'd to nothing and the
+// request — correctly formed, correctly routed — still returned zero rows.
+//
+// The lane is the legacy-token bucket, so it must contain the custom statuses
+// that project to that token.
+func TestCategoryLaneReturnsRowsForCustomStatusSelection(t *testing.T) {
+	ensureTestWorkspaceStatuses(t)
+	custom, code, body := createStatus(t, map[string]any{
+		"name": "Lane Needs QA", "category": "in_progress", "icon": "in_review", "color": "warning",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create custom status: %d %s", code, body)
+	}
+	t.Cleanup(func() { deleteStatus(t, custom.ID, "") })
+
+	created, code, body := createIssueWithStatusFields(t, map[string]any{
+		"title": "lane custom row", "status_id": custom.ID, "priority": "none",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create issue: %d %s", code, body)
+	}
+	t.Cleanup(func() { deleteTestIssue(t, created.ID) })
+
+	// Exactly what the List sends for a custom-status selection.
+	w := httptest.NewRecorder()
+	testHandler.ListIssueTableRows(w, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
+		Query: issueTableQuerySpec{
+			Scope:   issueTableScope{Kind: "workspace"},
+			Filters: issueTableFiltersRequest{StatusIds: []string{custom.ID}},
+			Sort:    issueTableSortRequest{Field: "position", Direction: "asc"},
+		},
+		Group:    issueTableGroupSpec{Kind: "status"},
+		GroupKey: strPtr("status:in_progress"),
+		Page:     issueTablePageRequest{Limit: 50},
+	}))
+	if w.Code != http.StatusOK {
+		t.Fatalf("category lane rows: expected 200, got %d %s", w.Code, w.Body.String())
+	}
+	var resp issueTableRowsResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode rows: %v", err)
+	}
+	var found bool
+	for _, row := range resp.Rows {
+		if row.Issue.ID == created.ID {
+			found = true
+			if row.Issue.StatusDetail == nil || row.Issue.StatusDetail.Name != "Lane Needs QA" {
+				t.Fatalf("row lost its catalog status: %v", row.Issue.StatusDetail)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("custom-status issue missing from its Category lane: %d rows returned — this is the empty-list regression", len(resp.Rows))
+	}
+
+	// The lane must still be the legacy-token bucket, not a Category free-for-all:
+	// in_review is its own lane and must not be swept into in_progress.
+	inReview, code, body := createIssueWithStatusFields(t, map[string]any{
+		"title": "lane in review row", "status": "in_review", "priority": "none",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create in_review issue: %d %s", code, body)
+	}
+	t.Cleanup(func() { deleteTestIssue(t, inReview.ID) })
+
+	w2 := httptest.NewRecorder()
+	testHandler.ListIssueTableRows(w2, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
+		Query: issueTableQuerySpec{
+			Scope:   issueTableScope{Kind: "workspace"},
+			Filters: issueTableFiltersRequest{},
+			Sort:    issueTableSortRequest{Field: "position", Direction: "asc"},
+		},
+		Group:    issueTableGroupSpec{Kind: "status"},
+		GroupKey: strPtr("status:in_progress"),
+		Page:     issueTablePageRequest{Limit: 100},
+	}))
+	var resp2 issueTableRowsResponse
+	json.NewDecoder(w2.Body).Decode(&resp2)
+	for _, row := range resp2.Rows {
+		if row.Issue.ID == inReview.ID {
+			t.Fatal("in_review issue leaked into the in_progress lane; the lane is the token bucket, not the Category")
+		}
+	}
+}

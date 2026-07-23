@@ -78,6 +78,42 @@ function never<T>(): Promise<T> {
   return new Promise<T>(() => {});
 }
 
+function makeIssue(id: string, status: string, statusId: string) {
+  return {
+    id,
+    workspace_id: "ws-1",
+    number: 1,
+    identifier: `MUL-${id}`,
+    title: id,
+    description: null,
+    status,
+    status_id: statusId,
+    priority: "none",
+    assignee_type: null,
+    assignee_id: null,
+    creator_type: "member",
+    creator_id: "user-1",
+    parent_issue_id: null,
+    project_id: null,
+    position: 1,
+    stage: null,
+    start_date: null,
+    due_date: null,
+    metadata: {},
+    properties: {},
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+}
+
+// The row the server returns for each lane. Keyed by the group_key the surface
+// asks for, so the mock answers like the real endpoint instead of always [].
+const ROW_BY_LANE: Record<string, ReturnType<typeof makeIssue>> = {
+  "status:todo": makeIssue("issue-todo", "todo", TODO_ID),
+  // A CUSTOM in_progress status still reports the legacy token on the issue.
+  "status:in_progress": makeIssue("issue-needs-qa", "in_progress", NEEDS_QA_ID),
+};
+
 function makeWrapper(qc: QueryClient, surfaceKey: string) {
   const store = getIssueSurfaceViewStore(surfaceKey);
   return function Wrapper({ children }: { children: ReactNode }) {
@@ -95,15 +131,19 @@ describe("List status branches with a catalog-id selection", () => {
 
   beforeEach(() => {
     qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    listIssueTableRows = vi.fn(async (request: any) => ({
-      query_fingerprint: "test",
-      group_key: request.group_key,
-      parent_id: null,
-      total: 0,
-      rows: [],
-      branch_total: 0,
-      next_cursor: null,
-    }));
+    listIssueTableRows = vi.fn(async (request: any) => {
+      const issue = ROW_BY_LANE[request.group_key as string];
+      const rows = issue ? [{ issue, direct_child_count: 0 }] : [];
+      return {
+        query_fingerprint: "test",
+        group_key: request.group_key,
+        parent_id: null,
+        total: rows.length,
+        rows,
+        branch_total: rows.length,
+        next_cursor: null,
+      };
+    });
     setApiInstance({
       // The endpoint returns a catalog envelope; issueStatusListOptions selects
       // `.statuses` off it.
@@ -170,6 +210,11 @@ describe("List status branches with a catalog-id selection", () => {
         }),
       }),
     );
+    // The row the server returned must actually reach the surface. Asserting the
+    // request alone would pass even when the response is empty.
+    await waitFor(() =>
+      expect(result.current.issues.map((i) => i.id)).toContain("issue-todo"),
+    );
   });
 
   it("selecting a CUSTOM status by catalog id fetches its Category lane", async () => {
@@ -190,6 +235,12 @@ describe("List status branches with a catalog-id selection", () => {
           filters: expect.objectContaining({ status_ids: [NEEDS_QA_ID] }),
         }),
       }),
+    );
+    // The whole point: the custom-status issue is VISIBLE. The server returns it
+    // inside the Category lane, and the surface must surface it. Asserting only
+    // the request shape is what let the empty-list regression through.
+    await waitFor(() =>
+      expect(result.current.issues.map((i) => i.id)).toContain("issue-needs-qa"),
     );
   });
 });
