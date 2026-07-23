@@ -1059,6 +1059,7 @@ function IssueTableBodyCell({
         <div onClick={stopRowNavigation}>
           <StatusPicker
             status={issue.status}
+            statusDetail={issue.status_detail}
             onUpdate={onUpdate}
             align="start"
             open={editorOpen}

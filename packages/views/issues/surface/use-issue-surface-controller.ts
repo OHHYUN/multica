@@ -31,6 +31,8 @@ import {
 import type { IssueScope } from "@multica/core/issues/surface/scope";
 import type { IssueDateFilter, SortField } from "@multica/core/issues/stores/view-store";
 import { propertyListOptions } from "@multica/core/properties";
+import { issueStatusListOptions } from "@multica/core/issue-statuses";
+import { resolveStatusFilterIds } from "../utils/status-filter";
 import { propertyIdFromViewKey } from "@multica/core/issues/stores/view-store";
 import { useViewStore } from "@multica/core/issues/stores/view-store-context";
 import type { IssueFilters } from "../utils/filter";
@@ -335,6 +337,18 @@ export function useIssueSurfaceController({
     return issueIDs;
   }, [workspaceWorkingAgents]);
 
+  // Selected statuses resolve to catalog ids (MUL-4809). A stored selection may
+  // still hold legacy tokens from an older build; resolveStatusFilterIds accepts
+  // both. When the catalog is unavailable (old server / unseeded workspace) the
+  // resolution is empty and the legacy `statuses` token facet is used instead.
+  // NOTE: the Table query spec below still filters on legacy tokens only — the
+  // catalog-keyed Table/board facet is the deferred follow-up (see PR #5505).
+  const { data: statusCatalog = [] } = useQuery(issueStatusListOptions(wsId));
+  const statusFilterIds = useMemo(
+    () => resolveStatusFilterIds(statusFilters, statusCatalog),
+    [statusFilters, statusCatalog],
+  );
+
   const tableQuerySpec = useMemo<IssueTableQuerySpec>(() => {
     let queryScope: IssueTableQuerySpec["scope"];
     switch (scope.type) {
@@ -378,7 +392,15 @@ export function useIssueSurfaceController({
     return {
       scope: queryScope,
       filters: {
-        ...(statusFilters.length > 0 ? { statuses: statusFilters } : {}),
+        // Prefer the catalog facet: the picker stores catalog ids, which are not
+        // legacy tokens, so sending them as `statuses` would fail validation and
+        // 400 the whole Table. Fall back to legacy tokens only when the catalog
+        // is unavailable (old server / unseeded workspace) — MUL-4809.
+        ...(statusFilterIds.length > 0
+          ? { status_ids: statusFilterIds }
+          : statusFilters.length > 0
+            ? { statuses: statusFilters as IssueStatus[] }
+            : {}),
         ...(priorityFilters.length > 0 ? { priorities: priorityFilters } : {}),
         ...(assigneeFilters.length > 0 ? { assignees: assigneeFilters } : {}),
         ...(includeNoAssignee ? { include_no_assignee: true } : {}),
@@ -418,6 +440,7 @@ export function useIssueSurfaceController({
     sort.sort_by,
     sort.sort_direction,
     statusFilters,
+    statusFilterIds,
     viewIncludeNoProject,
     viewProjectFilters,
     workingIssueIDs,
@@ -580,6 +603,8 @@ export function useIssueSurfaceController({
     ganttShowCompleted,
     sort,
     statusFilters,
+    statusFilterIds,
+    statusCatalog,
     priorityFilters,
     assigneeFilters,
     includeNoAssignee,
