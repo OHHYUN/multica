@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { Issue, IssueStatusDefinition } from "@multica/core/types";
-import { issueMatchesStatusFilter, resolveStatusFilterIds } from "./status-filter";
+import {
+  issueMatchesStatusFilter,
+  resolveStatusFilterIds,
+  resolveStatusFilterTokens,
+} from "./status-filter";
 
 // MUL-4809 — status filter selections are persisted, and older builds stored the
 // 7 legacy tokens. Catalog-driven filtering selects by catalog id, so a stored
@@ -104,5 +108,52 @@ describe("issueMatchesStatusFilter", () => {
   it("does not hide everything while the catalog is still loading", () => {
     // Catalog empty => ids resolve to nothing; the legacy comparison still runs.
     expect(issueMatchesStatusFilter({ status: "todo", status_id: TODO.id }, ["todo"], [])).toBe(true);
+  });
+});
+
+describe("resolveStatusFilterTokens", () => {
+  // The List / status-grouped Board pick their server branches from the legacy
+  // lanes. The filter menu stores a catalog id even for built-ins, so without
+  // this projection the lane set is empty and the surface renders zero rows.
+  it("projects a BUILT-IN catalog id onto its own lane", () => {
+    expect(resolveStatusFilterTokens([TODO.id], CATALOG)).toEqual(["todo"]);
+  });
+
+  it("projects a CUSTOM catalog id onto its Category lane", () => {
+    expect(resolveStatusFilterTokens([CUSTOM.id], CATALOG)).toEqual([
+      CUSTOM.category,
+    ]);
+  });
+
+  it("keeps a legacy token from an older persisted selection", () => {
+    expect(resolveStatusFilterTokens(["in_review"], CATALOG)).toEqual([
+      "in_review",
+    ]);
+  });
+
+  it("drops ids it cannot resolve so the caller shows every lane", () => {
+    // Cold start: catalog still loading. Returning nothing makes the caller fall
+    // back to all lanes — the row queries carry status_ids, so rows stay correct
+    // and no lane is wrongly hidden. Returning the raw id would hide everything.
+    const unloadedId = "11111111-1111-4111-8111-111111111111";
+    expect(resolveStatusFilterTokens([unloadedId], [])).toEqual([]);
+  });
+});
+
+describe("resolveStatusFilterIds cold start", () => {
+  // Before the catalog settles nothing can be matched by id or system_key. A
+  // catalog-id-shaped entry is already what the server wants, so it must pass
+  // through as status_ids; otherwise the caller falls back to the legacy
+  // `statuses` facet and the first request after a refresh sends UUIDs into a
+  // 7-token enum, which the server rejects with 400.
+  it("passes catalog-id-shaped entries through while the catalog is loading", () => {
+    const id = "11111111-1111-4111-8111-111111111111";
+    expect(resolveStatusFilterIds([id], [])).toEqual([id]);
+  });
+
+  it("still drops a legacy token while the catalog is loading", () => {
+    // A token cannot be turned into an id without the catalog, and sending it as
+    // status_ids would 400. It stays on the legacy facet instead.
+    expect(resolveStatusFilterIds(["todo"], [])).toEqual([]);
   });
 });

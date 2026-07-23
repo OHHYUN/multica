@@ -27,6 +27,7 @@ import {
   type IssueFilterState,
   type IssueFilters,
 } from "../utils/filter";
+import { resolveStatusFilterTokens } from "../utils/status-filter";
 import type { ChildProgress } from "../components/list-row";
 import type {
   IssueStatusBranches,
@@ -502,11 +503,21 @@ export function useIssueSurfaceData({
     // Default view shows every lifecycle status, `cancelled` last (its
     // canonical position in ALL_STATUSES). An active status filter narrows to
     // the selected subset while preserving that order.
-    if (statusFilters.length > 0) {
-      return ALL_STATUSES.filter((s) => statusFilters.includes(s));
+    //
+    // The selection holds catalog ids (for built-ins too), so it is projected
+    // onto the legacy lanes first — matching raw ids against ALL_STATUSES finds
+    // nothing and hides every lane (MUL-4809). A projection that resolves to
+    // nothing (catalog still loading) keeps all lanes rather than blanking the
+    // surface; the row queries carry `status_ids` and stay correct meanwhile.
+    const selectedTokens = resolveStatusFilterTokens(
+      statusFilters,
+      statusCatalog,
+    );
+    if (selectedTokens.length > 0) {
+      return ALL_STATUSES.filter((s) => selectedTokens.includes(s));
     }
     return ALL_STATUSES;
-  }, [statusFilters]);
+  }, [statusCatalog, statusFilters]);
 
   // Hidden columns are the lifecycle statuses not currently visible, so
   // `cancelled` participates in the board show/hide controls exactly like the

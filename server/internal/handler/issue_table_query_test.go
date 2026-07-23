@@ -544,6 +544,10 @@ func TestIssueTableRowsCommitsBeforeBestEffortEnrichment(t *testing.T) {
 }
 
 func TestIssueTableStatusGroupingOverOneThousandRows(t *testing.T) {
+	// Status groups key on the catalog id, so this test needs the catalog seeded
+	// BEFORE it issues the groups request. Relying on another test to seed first
+	// made it order-dependent: run alone it saw legacy `status:todo` keys.
+	ensureTestWorkspaceStatuses(t)
 	ctx := context.Background()
 	suffix := time.Now().UnixNano()
 	var projectID string
